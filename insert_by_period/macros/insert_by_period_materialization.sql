@@ -12,7 +12,7 @@
     {{ exceptions.raise_compiler_error(error_message) }}
   {%- endif -%}
 
-  {%- set identifier = model['name'] -%}
+  {%- set identifier = generate_alias_name(node=model['name']) -%}
 
   {%- set old_relation = adapter.get_relation(database=database, schema=schema, identifier=identifier) -%}
   {%- set target_relation = api.Relation.create(identifier=identifier, schema=schema, type='table') -%}
@@ -46,7 +46,7 @@
   {% if force_create or old_relation is none -%}
     {# Create an empty target table -#}
     {% call statement('main') -%}
-      {%- set empty_sql = sql | replace("__PERIOD_FILTER__", 'false') -%}
+      {%- set empty_sql = sql | replace("__PERIOD_FILTER__", 'null is null') -%}
       {{create_table_as(False, target_relation, empty_sql)}}
     {%- endcall %}
   {%- endif %}
@@ -75,7 +75,7 @@
     {%- set msg = "Running for " ~ period ~ " " ~ (i + 1) ~ " of " ~ (num_periods) -%}
     {{ print(msg) }}
 
-    {%- set tmp_identifier = model['name'] ~ '__dbt_incremental_period' ~ i ~ '_tmp' -%}
+    {%- set tmp_identifier = identifier ~ '__dbt_incremental_period' ~ i ~ '_tmp' -%}
     {%- set tmp_relation = insert_by_period.create_relation_for_insert_by_period(tmp_identifier, schema, 'table') -%}
     {% call statement() -%}
       {% set tmp_table_sql = insert_by_period.get_period_sql(target_cols_csv,
