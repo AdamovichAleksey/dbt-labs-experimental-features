@@ -1,7 +1,8 @@
 {% materialization insert_by_period, default -%}
   {%- set timestamp_field = config.require('timestamp_field') -%}
+  {%- set timestamp_field_target = config.get('timestamp_field_target') or config.require('timestamp_field') -%}
   {%- set start_date = config.require('start_date') -%}
-  {%- set stop_date = config.get('stop_date') or '' -%}
+  {%- set stop_date = config.get('stop_date') or modules.datetime.datetime.now().strftime('%Y-%m-%d') -%}
   {%- set period = config.get('period') or 'week' -%}
   {%- set backfill = config.get('backfill') or False -%}
 
@@ -12,7 +13,7 @@
     {{ exceptions.raise_compiler_error(error_message) }}
   {%- endif -%}
 
-  {%- set identifier = generate_alias_name(node=model['name']) -%}
+  {%- set identifier = generate_alias_name(model['name']) -%}
 
   {%- set old_relation = adapter.get_relation(database=database, schema=schema, identifier=identifier) -%}
   {%- set target_relation = api.Relation.create(identifier=identifier, schema=schema, type='table') -%}
@@ -46,7 +47,11 @@
   {% if force_create or old_relation is none -%}
     {# Create an empty target table -#}
     {% call statement('main') -%}
-      {%- set empty_sql = sql | replace("__PERIOD_FILTER__", 'null is null') -%}
+      {% if adapter.type() == 'teradata' -%}
+        {%- set empty_sql = sql | replace("__PERIOD_FILTER__", 'null is not null') -%}
+      {%- else -%}
+        {%- set empty_sql = sql | replace("__PERIOD_FILTER__", 'false') -%}
+      {%- endif %}
       {{create_table_as(False, target_relation, empty_sql)}}
     {%- endcall %}
   {%- endif %}
@@ -55,6 +60,7 @@
     schema,
     identifier,
     timestamp_field,
+    timestamp_field_target,
     start_date,
     stop_date,
     period,
@@ -77,6 +83,13 @@
 
     {%- set tmp_identifier = identifier ~ '__dbt_incremental_period' ~ i ~ '_tmp' -%}
     {%- set tmp_relation = insert_by_period.create_relation_for_insert_by_period(tmp_identifier, schema, 'table') -%}
+
+    -- Drop tmp_relation if it exists
+    {% set tmp_old_relation = adapter.get_relation(database=database, schema=schema, identifier=tmp_identifier) %}
+    {% if tmp_old_relation is not none %}
+      {{adapter.drop_relation(tmp_old_relation)}}
+    {% endif %}
+
     {% call statement() -%}
       {% set tmp_table_sql = insert_by_period.get_period_sql(target_cols_csv,
                                                        sql,
@@ -91,13 +104,16 @@
     {{adapter.expand_target_column_types(from_relation=tmp_relation,
                                          to_relation=target_relation)}}
     {%- set name = 'main-' ~ i -%}
+    {%- set insert_opening = '(' if adapter.type() != 'teradata' else '' -%}
+    {%- set insert_closing = ')' if adapter.type() != 'teradata' else '' -%}
     {% call statement(name, fetch_result=True) -%}
       insert into {{target_relation}} ({{target_cols_csv}})
-      (
+        {{insert_opening}}
           select
               {{target_cols_csv}}
           from {{tmp_relation.include(schema=True)}}
-      );
+        {{insert_closing}}
+      ;
     {%- endcall %}
     {% set result = load_result('main-' ~ i) %}
     
@@ -108,6 +124,9 @@
 
     {%- set msg = "Ran for " ~ period ~ " " ~ (i + 1) ~ " of " ~ (num_periods) ~ "; " ~ rows_inserted ~ " record(s) inserted" -%}
     {{ print(msg) }}
+
+    -- Drop tmp_relation after insertion
+    {{adapter.drop_relation(tmp_relation)}}
 
   {%- endfor %}
 
